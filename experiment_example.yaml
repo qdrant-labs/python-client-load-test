@@ -1,0 +1,203 @@
+# Qdrant Recall Sweep — Example Configuration
+#
+# Run with:
+#   uv run main.py \
+#     --qdrant-url $QDRANT_URL \
+#     --qdrant-api-key $QDRANT_API_KEY \
+#     --collection-name my_collection \
+#     --parquet-file queries.parquet \
+#     --num-queries 1000 \
+#     --concurrency 100 \
+#     --limit 10 \
+#     --output sweep_report.html \
+#     --experiment-file experiment_example.yaml
+#
+# Brute-force (exact search) runs ONCE per collection and is cached.
+# The sweep halts as soon as `stopping_metric` >= `stopping_threshold`.
+#
+# Quantization types (collection_config.quantization):
+#   none   — clear existing quantization
+#   scalar — INT8 scalar quantization
+#   binary — 1-bit binary quantization
+#   turbo  — TurboQuant; requires `bits: bits1 | bits1_5 | bits2 | bits4`
+#              (bits4 is the default; lower = higher compression, lower recall floor)
+#
+# apply_config: true  → PATCH the collection config and wait for GREEN before searching
+#               false → query the collection as-is (reuse config from a prior run)
+#
+# stopping_metric: p01 | p05 | p10 | p50 | mean
+# stopping_threshold: 0.0 – 1.0   (omit or set null to run all runs unconditionally)
+
+stopping_metric: p10
+stopping_threshold: 0.99
+
+runs:
+  # ── Binary quantization ─────────────────────────────────────────────────────
+  # encoding controls stored bit-depth (omit = default 1-bit):
+  #   two_bits, one_and_half_bits
+  # query_encoding controls how the query vector is encoded at search time
+  # (asymmetric quantization — omit or use "default"/"binary" for symmetric):
+  #   scalar8bits, scalar4bits
+
+  # 1-bit, symmetric (fastest, lowest recall floor)
+  - name: "binary-1bit"
+    description: "Binary 1-bit, symmetric query encoding"
+    apply_config: true
+    collection_config:
+      quantization: binary
+      always_ram: true
+      # encoding omitted → 1-bit default
+      # query_encoding omitted → symmetric binary
+    hnsw_ef: 64
+    rescore: false
+
+  # 1-bit + asymmetric scalar8bits query (better recall at same storage cost)
+  - name: "binary-1bit-asym-scalar8"
+    description: "Binary 1-bit, scalar8bits query encoding (asymmetric)"
+    apply_config: true
+    collection_config:
+      quantization: binary
+      always_ram: true
+      query_encoding: scalar8bits
+    hnsw_ef: 128
+    rescore: true
+    oversampling: 1.5
+
+  # 1-bit + scalar4bits query
+  - name: "binary-1bit-asym-scalar4"
+    description: "Binary 1-bit, scalar4bits query encoding (asymmetric)"
+    apply_config: true
+    collection_config:
+      quantization: binary
+      always_ram: true
+      query_encoding: scalar4bits
+    hnsw_ef: 128
+    rescore: true
+    oversampling: 1.5
+
+  # 1.5-bit encoding + symmetric
+  - name: "binary-1.5bit"
+    description: "Binary 1.5-bit encoding"
+    apply_config: true
+    collection_config:
+      quantization: binary
+      encoding: one_and_half_bits
+      always_ram: true
+    hnsw_ef: 128
+    rescore: false
+
+  # 1.5-bit + asymmetric scalar8bits query
+  - name: "binary-1.5bit-asym-scalar8"
+    description: "Binary 1.5-bit encoding, scalar8bits query (asymmetric)"
+    apply_config: false    # reuse 1.5-bit config from above
+    hnsw_ef: 256
+    rescore: true
+    oversampling: 2.0
+
+  # 2-bit encoding + symmetric
+  - name: "binary-2bit"
+    description: "Binary 2-bit encoding"
+    apply_config: true
+    collection_config:
+      quantization: binary
+      encoding: two_bits
+      always_ram: true
+    hnsw_ef: 128
+    rescore: false
+
+  # 2-bit + asymmetric scalar8bits query (highest binary recall)
+  - name: "binary-2bit-asym-scalar8"
+    description: "Binary 2-bit encoding, scalar8bits query (asymmetric)"
+    apply_config: false    # reuse 2-bit config from above
+    hnsw_ef: 256
+    rescore: true
+    oversampling: 2.0
+
+  # ── TurboQuant ──────────────────────────────────────────────────────────────
+  # bits4 — default, lowest compression, highest recall
+  - name: "turbo-bits4"
+    description: "TurboQuant bits4 (default bit depth)"
+    apply_config: true
+    collection_config:
+      quantization: turbo
+      bits: bits4
+      always_ram: true
+    hnsw_ef: 64
+    rescore: false
+
+  - name: "turbo-bits4-rescore"
+    description: "TurboQuant bits4 + rescore, 2× oversampling"
+    apply_config: false
+    hnsw_ef: 128
+    rescore: true
+    oversampling: 2.0
+
+  # bits2 — moderate compression
+  - name: "turbo-bits2"
+    description: "TurboQuant bits2"
+    apply_config: true
+    collection_config:
+      quantization: turbo
+      bits: bits2
+      always_ram: true
+    hnsw_ef: 128
+    rescore: false
+
+  - name: "turbo-bits2-rescore"
+    description: "TurboQuant bits2 + rescore, 2× oversampling"
+    apply_config: false
+    hnsw_ef: 256
+    rescore: true
+    oversampling: 2.0
+
+  # bits1_5 — higher compression
+  - name: "turbo-bits1_5"
+    description: "TurboQuant bits1_5"
+    apply_config: true
+    collection_config:
+      quantization: turbo
+      bits: bits1_5
+      always_ram: true
+    hnsw_ef: 256
+    rescore: true
+    oversampling: 2.0
+
+  # bits1 — maximum compression, lowest recall floor
+  - name: "turbo-bits1"
+    description: "TurboQuant bits1 (maximum compression)"
+    apply_config: true
+    collection_config:
+      quantization: turbo
+      bits: bits1
+      always_ram: true
+    hnsw_ef: 512
+    rescore: true
+    oversampling: 4.0
+
+  # ── Scalar (INT8) quantization ───────────────────────────────────────────────
+  - name: "scalar-ef128"
+    description: "INT8 scalar quantization, ef=128"
+    apply_config: true
+    collection_config:
+      quantization: scalar
+      always_ram: true
+    hnsw_ef: 128
+    rescore: false
+
+  - name: "scalar-rescore-2x"
+    description: "INT8 scalar + rescore, 2× oversampling"
+    apply_config: false
+    hnsw_ef: 256
+    rescore: true
+    oversampling: 2.0
+
+  # ── Cross-collection test (pre-built collection with different m) ────────────
+  # Use collection_name to test against a separately indexed collection.
+  # Brute-force will run once for this collection too.
+  # - name: "m32-collection"
+  #   description: "Separate collection built with m=32"
+  #   collection_name: "my_collection_m32"
+  #   apply_config: false
+  #   hnsw_ef: 128
+  #   rescore: true
+  #   oversampling: 2.0

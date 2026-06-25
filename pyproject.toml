@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.3.2",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
     "python-dotenv>=1.1.1",
+    "pyyaml>=6.0",
     "qdrant-client>=1.15.1",
 ]
