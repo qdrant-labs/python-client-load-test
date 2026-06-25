@@ -45,6 +45,8 @@ python main.py \
   --limit 1000 \
   --prefer-grpc \
   -n 100000 \
-  -b 500
+  -b 500 \
+  --experiment-file "$SCRIPT_DIR/experiment_example.yaml" \
+  --output "sweep_report.html"
 
 deactivate

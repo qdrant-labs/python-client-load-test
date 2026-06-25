@@ -201,3 +201,128 @@ runs:
   #   hnsw_ef: 128
   #   rescore: true
   #   oversampling: 2.0
+
+  # ── HNSW parameter sweep (no quantization) ───────────────────────────────────
+  # Tests four (m, ef_construct) graph-build configs × four hnsw_ef search values.
+  # The first run in each block uses apply_config: true, which patches the
+  # collection and waits for a full HNSW index rebuild before searching.
+  # Subsequent hnsw_ef variants reuse the same rebuilt index (apply_config: false).
+  #
+  # hnsw_ef sweep: 1024 → 1536 → 2048 → 3072  (steps of 512, then 1024)
+  # (m, ef_construct) pairs: (16,128) (32,256) (64,512) (128,1024)
+
+  # ── m=16, ef_construct=128 ───────────────────────────────────────────────────
+  - name: "hnsw-m16-efc128-ef1024"
+    description: "m=16, ef_construct=128, hnsw_ef=1024, no quantization"
+    apply_config: true
+    collection_config:
+      quantization: none
+      m: 16
+      ef_construct: 128
+    hnsw_ef: 1024
+    rescore: false
+
+  - name: "hnsw-m16-efc128-ef1536"
+    description: "m=16, ef_construct=128, hnsw_ef=1536"
+    apply_config: false
+    hnsw_ef: 1536
+    rescore: false
+
+  - name: "hnsw-m16-efc128-ef2048"
+    description: "m=16, ef_construct=128, hnsw_ef=2048"
+    apply_config: false
+    hnsw_ef: 2048
+    rescore: false
+
+  - name: "hnsw-m16-efc128-ef3072"
+    description: "m=16, ef_construct=128, hnsw_ef=3072"
+    apply_config: false
+    hnsw_ef: 3072
+    rescore: false
+
+  # ── m=32, ef_construct=256 ───────────────────────────────────────────────────
+  - name: "hnsw-m32-efc256-ef1024"
+    description: "m=32, ef_construct=256, hnsw_ef=1024, no quantization"
+    apply_config: true
+    collection_config:
+      quantization: none
+      m: 32
+      ef_construct: 256
+    hnsw_ef: 1024
+    rescore: false
+
+  - name: "hnsw-m32-efc256-ef1536"
+    description: "m=32, ef_construct=256, hnsw_ef=1536"
+    apply_config: false
+    hnsw_ef: 1536
+    rescore: false
+
+  - name: "hnsw-m32-efc256-ef2048"
+    description: "m=32, ef_construct=256, hnsw_ef=2048"
+    apply_config: false
+    hnsw_ef: 2048
+    rescore: false
+
+  - name: "hnsw-m32-efc256-ef3072"
+    description: "m=32, ef_construct=256, hnsw_ef=3072"
+    apply_config: false
+    hnsw_ef: 3072
+    rescore: false
+
+  # ── m=64, ef_construct=512 ───────────────────────────────────────────────────
+  - name: "hnsw-m64-efc512-ef1024"
+    description: "m=64, ef_construct=512, hnsw_ef=1024, no quantization"
+    apply_config: true
+    collection_config:
+      quantization: none
+      m: 64
+      ef_construct: 512
+    hnsw_ef: 1024
+    rescore: false
+
+  - name: "hnsw-m64-efc512-ef1536"
+    description: "m=64, ef_construct=512, hnsw_ef=1536"
+    apply_config: false
+    hnsw_ef: 1536
+    rescore: false
+
+  - name: "hnsw-m64-efc512-ef2048"
+    description: "m=64, ef_construct=512, hnsw_ef=2048"
+    apply_config: false
+    hnsw_ef: 2048
+    rescore: false
+
+  - name: "hnsw-m64-efc512-ef3072"
+    description: "m=64, ef_construct=512, hnsw_ef=3072"
+    apply_config: false
+    hnsw_ef: 3072
+    rescore: false
+
+  # ── m=128, ef_construct=1024 ─────────────────────────────────────────────────
+  - name: "hnsw-m128-efc1024-ef1024"
+    description: "m=128, ef_construct=1024, hnsw_ef=1024, no quantization"
+    apply_config: true
+    collection_config:
+      quantization: none
+      m: 128
+      ef_construct: 1024
+    hnsw_ef: 1024
+    rescore: false
+
+  - name: "hnsw-m128-efc1024-ef1536"
+    description: "m=128, ef_construct=1024, hnsw_ef=1536"
+    apply_config: false
+    hnsw_ef: 1536
+    rescore: false
+
+  - name: "hnsw-m128-efc1024-ef2048"
+    description: "m=128, ef_construct=1024, hnsw_ef=2048"
+    apply_config: false
+    hnsw_ef: 2048
+    rescore: false
+
+  - name: "hnsw-m128-efc1024-ef3072"
+    description: "m=128, ef_construct=1024, hnsw_ef=3072"
+    apply_config: false
+    hnsw_ef: 3072
+    rescore: false
