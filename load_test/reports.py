@@ -166,12 +166,16 @@ def _quant_label(run: ExperimentRun) -> str:
 
 def _search_label(run: ExperimentRun) -> str:
     parts = []
+    if getattr(run, "query_mode", "dense") != "dense":
+        parts.append(run.query_mode)
     if run.hnsw_ef is not None:
         parts.append(f"ef={run.hnsw_ef}")
     if run.oversampling is not None:
         parts.append(f"os={run.oversampling}x")
     if run.rescore:
         parts.append("rescore")
+    if getattr(run, "query_filter", None):
+        parts.append("filtered")
     return ", ".join(parts) or "defaults"
 
 

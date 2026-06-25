@@ -6,7 +6,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from load_test.config import load_sweep_config
 from load_test.runner import run_load_test, run_sweep
-from load_test.vectors import load_embeddings_from_parquet
+from load_test.vectors import load_embeddings_from_parquet, load_sparse_embeddings_from_parquet
 
 
 class _AddVectorAction(argparse.Action):
@@ -42,14 +42,27 @@ def _build_parser() -> argparse.ArgumentParser:
     vector_group = parser.add_argument_group("Vector / Query Configuration")
     vector_group.add_argument("--vector-name", type=str, default=None, help="Named vector to search against.")
     vector_group.add_argument("--vector-dimension", type=int, default=None, help="Dimension for random vectors.")
-    vector_group.add_argument("--parquet-file", type=str, default=None, help="Path to parquet file with query embeddings.")
+    vector_group.add_argument("--parquet-file", type=str, default=None, help="Path to parquet file with dense query embeddings.")
     vector_group.add_argument("--embedding-column", type=str, default="embedding", help="Column in parquet file (default: 'embedding').")
+    vector_group.add_argument("--sparse-parquet-file", type=str, default=None,
+                              help="Path to parquet file with sparse query embeddings (required for query_mode: sparse/hybrid).")
+    vector_group.add_argument("--sparse-embedding-column", type=str, default="sparse_embedding",
+                              help="Column name for sparse embeddings (default: 'sparse_embedding').")
     vector_group.add_argument("--dense-vector", action=_AddVectorAction, dest="dense_vectors")
     vector_group.add_argument("--sparse-vector", action=_AddVectorAction, dest="sparse_vectors")
 
     search_group = parser.add_argument_group("Search Parameters (single-run mode)")
     search_group.add_argument("--limit", type=int, default=10, help="Top-k results per query.")
     search_group.add_argument("--rescore", action=argparse.BooleanOptionalAction, default=False, help="Enable quantization rescoring.")
+
+    reliability_group = parser.add_argument_group("Reliability")
+    reliability_group.add_argument("--max-retries", type=int, default=3,
+                                   help="Max retry attempts for transient query errors (default: 3).")
+    reliability_group.add_argument("--allow-wrap", action=argparse.BooleanOptionalAction, default=True,
+                                   help="Allow query index wrap when num-queries > available embeddings (default: True).\n"
+                                        "Use --no-allow-wrap to raise instead.")
+    reliability_group.add_argument("--warmup-queries", type=int, default=200,
+                                   help="Warmup queries per run before timing (default: 200, 0 disables).")
 
     sweep_group = parser.add_argument_group("Sweep Mode")
     sweep_group.add_argument(
@@ -61,6 +74,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "See experiment_example.yaml for the config schema."
         ),
     )
+
+    resume_group = parser.add_argument_group("Checkpoint / Resume (sweep mode only)")
+    resume_group.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False,
+                              help="Resume a previously interrupted sweep from checkpoint.")
+    resume_group.add_argument("--checkpoint-file", type=str, default=None,
+                              help=(
+                                  "Base path for checkpoint files.\n"
+                                  "Default: derived from --output (e.g. sweep.html → sweep.checkpoint.jsonl / sweep.exact_cache.json).\n"
+                                  "Decouples resume state from the output report filename."
+                              ))
 
     return parser
 
@@ -85,6 +108,12 @@ def main():
     elif args.vector_dimension is None and args.experiment_file is None:
         raise ValueError("Either --parquet-file or --vector-dimension must be specified.")
 
+    sparse_query_vectors = None
+    if args.sparse_parquet_file:
+        sparse_query_vectors = load_sparse_embeddings_from_parquet(
+            args.sparse_parquet_file, args.sparse_embedding_column
+        )
+
     common = dict(
         qdrant_url=args.qdrant_url,
         qdrant_api_key=args.qdrant_api_key,
@@ -99,11 +128,20 @@ def main():
         output=args.output,
         vector_dimension=args.vector_dimension,
         query_vectors=query_vectors,
+        allow_wrap=args.allow_wrap,
+        warmup_queries=args.warmup_queries,
+        max_retries=args.max_retries,
+        sparse_query_vectors=sparse_query_vectors,
     )
 
     if args.experiment_file:
         sweep = load_sweep_config(args.experiment_file)
-        asyncio.run(run_sweep(sweep=sweep, **common))
+        asyncio.run(run_sweep(
+            sweep=sweep,
+            resume=args.resume,
+            checkpoint_file=args.checkpoint_file,
+            **common,
+        ))
     else:
         asyncio.run(run_load_test(rescore=args.rescore, query_source=query_source, **common))
 

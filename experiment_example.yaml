@@ -1,4 +1,4 @@
-# Qdrant Recall Sweep — Example Configuration
+# Qdrant Recall Sweep — Structured Configuration
 #
 # Run with:
 #   uv run main.py \
@@ -12,317 +12,508 @@
 #     --output sweep_report.html \
 #     --experiment-file experiment_example.yaml
 #
-# Brute-force (exact search) runs ONCE per collection and is cached.
-# The sweep halts as soon as `stopping_metric` >= `stopping_threshold`.
+# To resume an interrupted sweep:
+#   uv run main.py ... --output sweep_report.html --resume
 #
-# Quantization types (collection_config.quantization):
-#   none   — clear existing quantization
-#   scalar — INT8 scalar quantization
-#   binary — 1-bit binary quantization
-#   turbo  — TurboQuant; requires `bits: bits1 | bits1_5 | bits2 | bits4`
-#              (bits4 is the default; lower = higher compression, lower recall floor)
+# ──────────────────────────────────────────────────────────────────────────────
+# STRUCTURE
+# ──────────────────────────────────────────────────────────────────────────────
+# groups:
+#   Top-level unit. Each group specifies:
+#     collection_config  — quantization type and settings (applied at the
+#                          collection level before index builds)
+#     index_configs      — HNSW graph build parameters (m, ef_construct).
+#                          One rebuild per entry.
+#     search_params      — Search-time parameters swept within each index build
+#                          (hnsw_ef, oversampling, rescore).
 #
-# apply_config: true  → PATCH the collection config and wait for GREEN before searching
-#               false → query the collection as-is (reuse config from a prior run)
+#   The tool generates one ExperimentRun per (index_config × search_param) pair.
+#   Run names are auto-generated: {group}/{index}/{search}
+#   e.g. "scalar/m32-efc256/ef128-rescore-os2x"
+#
+#   The first search_param under each index_config triggers apply_config=True
+#   (collection rebuild). Subsequent search_params reuse the rebuilt index.
+#   Set apply_config: false on a group to skip all rebuilds in that group.
+#
+# runs:  (optional)
+#   Flat list of one-off ExperimentRuns (backward-compatible, appended after groups).
+#   Use for cross-collection tests, hybrid/sparse modes, filtered runs, etc.
+#
+# ──────────────────────────────────────────────────────────────────────────────
+# QUANTIZATION TYPES (collection_config.quantization)
+#   none    — clear existing quantization
+#   scalar  — INT8 scalar quantization
+#   binary  — binary quantization; bits controlled by encoding:
+#               (omit)              → 1-bit (default)
+#               one_and_half_bits   → 1.5-bit
+#               two_bits            → 2-bit
+#             query_encoding (asymmetric): scalar8bits | scalar4bits
+#   turbo   — TurboQuant; bits: bits1 | bits1_5 | bits2 | bits4
 #
 # stopping_metric: p01 | p05 | p10 | p50 | mean
-# stopping_threshold: 0.0 – 1.0   (omit or set null to run all runs unconditionally)
+# stopping_threshold: 0.0 – 1.0  (omit or null to run all runs)
+# ──────────────────────────────────────────────────────────────────────────────
 
 stopping_metric: p10
 stopping_threshold: 0.99
+# limit overrides --limit from the CLI for all runs in this sweep.
+# Must be >= the largest hnsw_ef tested: Qdrant uses max(limit, hnsw_ef)
+# for the priority queue, so hnsw_ef < limit is effectively a no-op.
+limit: 1000
 
-runs:
-  # ── Binary quantization ─────────────────────────────────────────────────────
-  # encoding controls stored bit-depth (omit = default 1-bit):
-  #   two_bits, one_and_half_bits
-  # query_encoding controls how the query vector is encoded at search time
-  # (asymmetric quantization — omit or use "default"/"binary" for symmetric):
-  #   scalar8bits, scalar4bits
+groups:
 
-  # 1-bit, symmetric (fastest, lowest recall floor)
-  - name: "binary-1bit"
-    description: "Binary 1-bit, symmetric query encoding"
-    apply_config: true
+  # ── Scalar INT8 ─────────────────────────────────────────────────────────────
+  - name: scalar
+    collection_config:
+      quantization: scalar
+      always_ram: true
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+      - hnsw_ef: 1536
+      - hnsw_ef: 2048
+      - hnsw_ef: 3072
+
+  # ── Scalar INT8 + rescore ────────────────────────────────────────────────────
+  - name: scalar-rescore
+    collection_config:
+      quantization: scalar
+      always_ram: true
+    index_configs:
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 2.0
+
+  # ── Binary 1-bit (default encoding, symmetric query) ────────────────────────
+  - name: binary-1bit
     collection_config:
       quantization: binary
       always_ram: true
-      # encoding omitted → 1-bit default
-      # query_encoding omitted → symmetric binary
-    hnsw_ef: 64
-    rescore: false
+      # encoding omitted → 1-bit
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  # 1-bit + asymmetric scalar8bits query (better recall at same storage cost)
-  - name: "binary-1bit-asym-scalar8"
-    description: "Binary 1-bit, scalar8bits query encoding (asymmetric)"
-    apply_config: true
+  # ── Binary 1-bit + asymmetric scalar8bits query ──────────────────────────────
+  - name: binary-1bit-asym-scalar8
     collection_config:
       quantization: binary
       always_ram: true
       query_encoding: scalar8bits
-    hnsw_ef: 128
-    rescore: true
-    oversampling: 1.5
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 2.0
 
-  # 1-bit + scalar4bits query
-  - name: "binary-1bit-asym-scalar4"
-    description: "Binary 1-bit, scalar4bits query encoding (asymmetric)"
-    apply_config: true
+  # ── Binary 1-bit + asymmetric scalar4bits query ──────────────────────────────
+  - name: binary-1bit-asym-scalar4
     collection_config:
       quantization: binary
       always_ram: true
       query_encoding: scalar4bits
-    hnsw_ef: 128
-    rescore: true
-    oversampling: 1.5
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  # 1.5-bit encoding + symmetric
-  - name: "binary-1.5bit"
-    description: "Binary 1.5-bit encoding"
-    apply_config: true
+  # ── Binary 1.5-bit ───────────────────────────────────────────────────────────
+  - name: binary-1.5bit
     collection_config:
       quantization: binary
       encoding: one_and_half_bits
       always_ram: true
-    hnsw_ef: 128
-    rescore: false
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  # 1.5-bit + asymmetric scalar8bits query
-  - name: "binary-1.5bit-asym-scalar8"
-    description: "Binary 1.5-bit encoding, scalar8bits query (asymmetric)"
-    apply_config: false    # reuse 1.5-bit config from above
-    hnsw_ef: 256
-    rescore: true
-    oversampling: 2.0
+  # ── Binary 1.5-bit + asymmetric scalar8bits query ────────────────────────────
+  - name: binary-1.5bit-asym-scalar8
+    collection_config:
+      quantization: binary
+      encoding: one_and_half_bits
+      always_ram: true
+      query_encoding: scalar8bits
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 2.0
 
-  # 2-bit encoding + symmetric
-  - name: "binary-2bit"
-    description: "Binary 2-bit encoding"
-    apply_config: true
+  # ── Binary 1.5-bit + asymmetric scalar4bits query ────────────────────────────
+  - name: binary-1.5bit-asym-scalar4
+    collection_config:
+      quantization: binary
+      encoding: one_and_half_bits
+      always_ram: true
+      query_encoding: scalar4bits
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
+
+  # ── Binary 2-bit ─────────────────────────────────────────────────────────────
+  - name: binary-2bit
     collection_config:
       quantization: binary
       encoding: two_bits
       always_ram: true
-    hnsw_ef: 128
-    rescore: false
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  # 2-bit + asymmetric scalar8bits query (highest binary recall)
-  - name: "binary-2bit-asym-scalar8"
-    description: "Binary 2-bit encoding, scalar8bits query (asymmetric)"
-    apply_config: false    # reuse 2-bit config from above
-    hnsw_ef: 256
-    rescore: true
-    oversampling: 2.0
+  # ── Binary 2-bit + asymmetric scalar8bits query ──────────────────────────────
+  - name: binary-2bit-asym-scalar8
+    collection_config:
+      quantization: binary
+      encoding: two_bits
+      always_ram: true
+      query_encoding: scalar8bits
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 1.5
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 2.0
 
-  # ── TurboQuant ──────────────────────────────────────────────────────────────
-  # bits4 — default, lowest compression, highest recall
-  - name: "turbo-bits4"
-    description: "TurboQuant bits4 (default bit depth)"
-    apply_config: true
+  # ── Binary 2-bit + asymmetric scalar4bits query ──────────────────────────────
+  - name: binary-2bit-asym-scalar4
+    collection_config:
+      quantization: binary
+      encoding: two_bits
+      always_ram: true
+      query_encoding: scalar4bits
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
+
+  # ── TurboQuant bits4 (lowest compression, highest recall) ───────────────────
+  - name: turbo-bits4
     collection_config:
       quantization: turbo
       bits: bits4
       always_ram: true
-    hnsw_ef: 64
-    rescore: false
+    index_configs:
+      - m: 16
+        ef_construct: 128
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 2.0
 
-  - name: "turbo-bits4-rescore"
-    description: "TurboQuant bits4 + rescore, 2× oversampling"
-    apply_config: false
-    hnsw_ef: 128
-    rescore: true
-    oversampling: 2.0
-
-  # bits2 — moderate compression
-  - name: "turbo-bits2"
-    description: "TurboQuant bits2"
-    apply_config: true
+  # ── TurboQuant bits2 ─────────────────────────────────────────────────────────
+  - name: turbo-bits2
     collection_config:
       quantization: turbo
       bits: bits2
       always_ram: true
-    hnsw_ef: 128
-    rescore: false
+    index_configs:
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  - name: "turbo-bits2-rescore"
-    description: "TurboQuant bits2 + rescore, 2× oversampling"
-    apply_config: false
-    hnsw_ef: 256
-    rescore: true
-    oversampling: 2.0
-
-  # bits1_5 — higher compression
-  - name: "turbo-bits1_5"
-    description: "TurboQuant bits1_5"
-    apply_config: true
+  # ── TurboQuant bits1_5 ───────────────────────────────────────────────────────
+  - name: turbo-bits1_5
     collection_config:
       quantization: turbo
       bits: bits1_5
       always_ram: true
-    hnsw_ef: 256
-    rescore: true
-    oversampling: 2.0
+    index_configs:
+      - m: 32
+        ef_construct: 256
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  # bits1 — maximum compression, lowest recall floor
-  - name: "turbo-bits1"
-    description: "TurboQuant bits1 (maximum compression)"
-    apply_config: true
+  # ── TurboQuant bits1 (max compression) ──────────────────────────────────────
+  - name: turbo-bits1
     collection_config:
       quantization: turbo
       bits: bits1
       always_ram: true
-    hnsw_ef: 512
-    rescore: true
-    oversampling: 4.0
+    index_configs:
+      - m: 64
+        ef_construct: 512
+      - m: 128
+        ef_construct: 1024
+    search_params:
+      - hnsw_ef: 1024
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 1536
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 2048
+        rescore: true
+        oversampling: 2.0
+      - hnsw_ef: 3072
+        rescore: true
+        oversampling: 4.0
 
-  # ── Scalar (INT8) quantization ───────────────────────────────────────────────
-  - name: "scalar-ef128"
-    description: "INT8 scalar quantization, ef=128"
-    apply_config: true
-    collection_config:
-      quantization: scalar
-      always_ram: true
-    hnsw_ef: 128
-    rescore: false
 
-  - name: "scalar-rescore-2x"
-    description: "INT8 scalar + rescore, 2× oversampling"
-    apply_config: false
-    hnsw_ef: 256
-    rescore: true
-    oversampling: 2.0
-
-  # ── Cross-collection test (pre-built collection with different m) ────────────
-  # Use collection_name to test against a separately indexed collection.
-  # Brute-force will run once for this collection too.
-  # - name: "m32-collection"
-  #   description: "Separate collection built with m=32"
-  #   collection_name: "my_collection_m32"
-  #   apply_config: false
-  #   hnsw_ef: 128
-  #   rescore: true
-  #   oversampling: 2.0
-
-  # ── HNSW parameter sweep (no quantization) ───────────────────────────────────
-  # Tests four (m, ef_construct) graph-build configs × four hnsw_ef search values.
-  # The first run in each block uses apply_config: true, which patches the
-  # collection and waits for a full HNSW index rebuild before searching.
-  # Subsequent hnsw_ef variants reuse the same rebuilt index (apply_config: false).
-  #
-  # hnsw_ef sweep: 1024 → 1536 → 2048 → 3072  (steps of 512, then 1024)
-  # (m, ef_construct) pairs: (16,128) (32,256) (64,512) (128,1024)
-
-  # ── m=16, ef_construct=128 ───────────────────────────────────────────────────
-  - name: "hnsw-m16-efc128-ef1024"
-    description: "m=16, ef_construct=128, hnsw_ef=1024, no quantization"
-    apply_config: true
-    collection_config:
-      quantization: none
-      m: 16
-      ef_construct: 128
-    hnsw_ef: 1024
-    rescore: false
-
-  - name: "hnsw-m16-efc128-ef1536"
-    description: "m=16, ef_construct=128, hnsw_ef=1536"
-    apply_config: false
-    hnsw_ef: 1536
-    rescore: false
-
-  - name: "hnsw-m16-efc128-ef2048"
-    description: "m=16, ef_construct=128, hnsw_ef=2048"
-    apply_config: false
-    hnsw_ef: 2048
-    rescore: false
-
-  - name: "hnsw-m16-efc128-ef3072"
-    description: "m=16, ef_construct=128, hnsw_ef=3072"
-    apply_config: false
-    hnsw_ef: 3072
-    rescore: false
-
-  # ── m=32, ef_construct=256 ───────────────────────────────────────────────────
-  - name: "hnsw-m32-efc256-ef1024"
-    description: "m=32, ef_construct=256, hnsw_ef=1024, no quantization"
-    apply_config: true
-    collection_config:
-      quantization: none
-      m: 32
-      ef_construct: 256
-    hnsw_ef: 1024
-    rescore: false
-
-  - name: "hnsw-m32-efc256-ef1536"
-    description: "m=32, ef_construct=256, hnsw_ef=1536"
-    apply_config: false
-    hnsw_ef: 1536
-    rescore: false
-
-  - name: "hnsw-m32-efc256-ef2048"
-    description: "m=32, ef_construct=256, hnsw_ef=2048"
-    apply_config: false
-    hnsw_ef: 2048
-    rescore: false
-
-  - name: "hnsw-m32-efc256-ef3072"
-    description: "m=32, ef_construct=256, hnsw_ef=3072"
-    apply_config: false
-    hnsw_ef: 3072
-    rescore: false
-
-  # ── m=64, ef_construct=512 ───────────────────────────────────────────────────
-  - name: "hnsw-m64-efc512-ef1024"
-    description: "m=64, ef_construct=512, hnsw_ef=1024, no quantization"
-    apply_config: true
-    collection_config:
-      quantization: none
-      m: 64
-      ef_construct: 512
-    hnsw_ef: 1024
-    rescore: false
-
-  - name: "hnsw-m64-efc512-ef1536"
-    description: "m=64, ef_construct=512, hnsw_ef=1536"
-    apply_config: false
-    hnsw_ef: 1536
-    rescore: false
-
-  - name: "hnsw-m64-efc512-ef2048"
-    description: "m=64, ef_construct=512, hnsw_ef=2048"
-    apply_config: false
-    hnsw_ef: 2048
-    rescore: false
-
-  - name: "hnsw-m64-efc512-ef3072"
-    description: "m=64, ef_construct=512, hnsw_ef=3072"
-    apply_config: false
-    hnsw_ef: 3072
-    rescore: false
-
-  # ── m=128, ef_construct=1024 ─────────────────────────────────────────────────
-  - name: "hnsw-m128-efc1024-ef1024"
-    description: "m=128, ef_construct=1024, hnsw_ef=1024, no quantization"
-    apply_config: true
-    collection_config:
-      quantization: none
-      m: 128
-      ef_construct: 1024
-    hnsw_ef: 1024
-    rescore: false
-
-  - name: "hnsw-m128-efc1024-ef1536"
-    description: "m=128, ef_construct=1024, hnsw_ef=1536"
-    apply_config: false
-    hnsw_ef: 1536
-    rescore: false
-
-  - name: "hnsw-m128-efc1024-ef2048"
-    description: "m=128, ef_construct=1024, hnsw_ef=2048"
-    apply_config: false
-    hnsw_ef: 2048
-    rescore: false
-
-  - name: "hnsw-m128-efc1024-ef3072"
-    description: "m=128, ef_construct=1024, hnsw_ef=3072"
-    apply_config: false
-    hnsw_ef: 3072
-    rescore: false
+# ── One-off / custom runs (flat format) ─────────────────────────────────────
+# Appended after all group-generated runs.
+# Useful for: cross-collection tests, hybrid/sparse, payload filters, custom naming.
+#
+# runs:
+#
+#   # Cross-collection: benchmark a separately-indexed collection (different m)
+#   - name: "external-m32-collection"
+#     collection_name: my_collection_m32
+#     apply_config: false
+#     hnsw_ef: 128
+#     rescore: true
+#     oversampling: 2.0
+#
+#   # Payload filter: recall is computed against a filtered brute-force baseline
+#   - name: "scalar/m32-efc256/ef128-filtered-cat-a"
+#     apply_config: false
+#     hnsw_ef: 128
+#     query_filter:
+#       must:
+#         - key: category
+#           match:
+#             value: "A"
+#
+#   # Hybrid: RRF fusion of dense + sparse (requires --sparse-parquet-file)
+#   - name: "hybrid-rrf/m32-efc256/ef128-rescore-os2x"
+#     apply_config: false
+#     query_mode: hybrid
+#     sparse_vector_name: sparse_vectors
+#     hnsw_ef: 128
+#     rescore: true
+#     oversampling: 2.0
+#
+#   # Per-run warmup override
+#   - name: "scalar/m32-efc256/ef128-warmup500"
+#     apply_config: false
+#     hnsw_ef: 128
+#     warmup_queries: 500
